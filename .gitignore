@@ -1,0 +1,64 @@
+# ── Virtual Environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Jupyter Notebooks ─────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Streamlit ─────────────────────────────────────────────────────────────────
+.streamlit/
+
+# ── ML Model Weights & Caches ─────────────────────────────────────────────────
+# Hugging Face cache (large model weights - do not commit)
+~/.cache/huggingface/
+.cache/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Annoy index files
+*.ann
+
+# ── Data Files (auto-downloaded) ──────────────────────────────────────────────
+# The CSV is auto-downloaded from Google Drive on first run
+# Uncomment the line below if you want to exclude it from the repo
+# processed_ingredients_with_id.csv
+
+# ── Environment Variables ─────────────────────────────────────────────────────
+.env
+.env.*
+*.env
+
+# ── OS & Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Logs & Temporary Files ────────────────────────────────────────────────────
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
