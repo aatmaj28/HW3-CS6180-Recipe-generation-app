@@ -4,15 +4,57 @@ import spacy
 import os
 import gdown
 from annoy import AnnoyIndex
-import gdown
-from annoy import AnnoyIndex
 import numpy as np
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
 import re
+import requests
 from youtube_search import YoutubeSearch
+from dotenv import load_dotenv
 
-# Load models
+# Load environment variables from .env (local dev)
+load_dotenv()
+
+# --- API Configuration ---
+def get_api_key():
+    """Get API key from Streamlit secrets (cloud) or .env (local)."""
+    try:
+        return st.secrets["OPENROUTER_API_KEY"]
+    except Exception:
+        key = os.getenv("OPENROUTER_API_KEY")
+        if not key or key == "your-api-key-here":
+            st.error("⚠️ Please set your OPENROUTER_API_KEY in `.env` (local) or Streamlit Secrets (cloud).")
+            st.stop()
+        return key
+
+def call_openrouter(prompt, temperature=1.0, top_k=50, top_p=0.95, max_tokens=2048):
+    """Call OpenRouter API with the given prompt and generation parameters."""
+    api_key = get_api_key()
+    
+    response = requests.post(
+        url="https://openrouter.ai/api/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "google/gemma-3-12b-it:free",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "top_k": top_k,
+            "top_p": top_p,
+            "max_tokens": max_tokens,
+            "repetition_penalty": 1.2,
+        },
+    )
+    
+    if response.status_code != 200:
+        st.error(f"API Error ({response.status_code}): {response.text}")
+        return "Error generating response. Please try again."
+    
+    data = response.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
+# --- NLP Models ---
 @st.cache_resource
 def load_spacy_model():
     try:
@@ -24,16 +66,6 @@ def load_spacy_model():
         return spacy.load("en_core_web_lg")
 
 nlp = load_spacy_model()
-
-@st.cache_resource
-def load_model():
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    return model, tokenizer
-
-model, tokenizer = load_model()
 
 # Download & Load Ingredient Data
 GDRIVE_FILE_URL = "https://drive.google.com/uc?id=1-qf8ZIrBlsEixBJULmXyDJk4M4ktRurH"
@@ -67,16 +99,16 @@ ingredient_vectors, filtered_ingredient_list = compute_embeddings()
 @st.cache_resource
 def build_annoy_index():
     dim = ingredient_vectors.shape[1]
-    index = AnnoyIndex(dim, metric="angular")  #  Uses angular distance (1 - cosine similarity)
+    index = AnnoyIndex(dim, metric="angular")  # Uses angular distance (1 - cosine similarity)
     
     for i, vec in enumerate(ingredient_vectors):
         index.add_item(i, vec)
     
-    index.build(50)  #  More trees = better accuracy
+    index.build(50)  # More trees = better accuracy
     return index
 annoy_index = build_annoy_index()
 
-#  Direct Cosine Similarity Search (Most Accurate)
+# Direct Cosine Similarity Search (Most Accurate)
 def cosine_similarity(vec1, vec2):
     return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2)) if np.any(vec1) and np.any(vec2) else 0
 
@@ -98,7 +130,7 @@ def direct_search_alternatives(ingredient):
     # Return top 3 most similar ingredients
     return [item[0] for item in scores[:3]]
 
-#  Annoy Search 
+# Annoy Search 
 def annoy_search_alternatives(ingredient):
     vector = nlp(ingredient.lower()).vector
     if not np.any(vector):
@@ -115,8 +147,8 @@ def annoy_search_alternatives(ingredient):
             
     return candidates[:3] 
 
-#  Generate Recipe
-def generate_recipe(ingredients, cuisine, temperature, top_k, top_p, num_beams, do_sample, prompt_type, serving_size, chef_persona):
+# Generate Recipe
+def generate_recipe(ingredients, cuisine, temperature, top_k, top_p, prompt_type, serving_size, chef_persona):
     
     # AI System Prompts (Task 2)
     prompts = {
@@ -164,40 +196,8 @@ def generate_recipe(ingredients, cuisine, temperature, top_k, top_p, num_beams, 
     
     input_text = f"{chef_instruction}\n\n{base_prompt}" if chef_persona != "Standard Assistant" else base_prompt 
     
-    # Use chat template to format the prompt correctly for the model
-    messages = [
-        {"role": "user", "content": input_text}
-    ]
-    inputs = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True).to(model.device)
+    response = call_openrouter(input_text, temperature=temperature, top_k=top_k, top_p=top_p)
 
-    # Dynamic generation args
-    gen_kwargs = {
-        "max_new_tokens": 2048,  # Increased to prevent cutoff
-        "num_return_sequences": 1,
-        "repetition_penalty": 1.2,
-        "do_sample": do_sample,
-        "num_beams": num_beams,
-        "early_stopping": True if num_beams > 1 else False
-    }
-
-    if do_sample:
-        gen_kwargs.update({
-            "temperature": temperature,
-            "top_k": top_k,
-            "top_p": top_p
-        })
-
-    outputs = model.generate(inputs, **gen_kwargs)
-    # Decode only the new tokens (response)
-    response = tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True).strip()
-
-    # Post-processing to remove script-like dialogue (Chef: ... Assistant: ...)
-    if "Chef:" in response or "Assistant:" in response:
-        # Try to find where the actual recipe starts
-        match = re.search(r"(Title:|Ingredients:|1\.|Here is the recipe)", response, re.IGNORECASE)
-        if match:
-             response = response[match.start():] # Keep everything from the match onwards
-    
     # Clean up formatting (remove asterisks and hash signs)
     response = response.replace("*", "").replace("#", "")
 
@@ -217,11 +217,7 @@ def generate_nutrition(recipe_text):
         f"RECIPE:\n{recipe_text[:1000]}" # Truncate to save context
     )
     
-    messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True).to(model.device)
-    
-    outputs = model.generate(inputs, max_new_tokens=150, num_return_sequences=1)
-    return tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True).strip()
+    return call_openrouter(prompt, temperature=0.3, max_tokens=150)
 
 def parse_nutrition_data(text):
     try:
@@ -251,29 +247,16 @@ def parse_nutrition_data(text):
         return None
 
 
-#  Streamlit App UI
+# Streamlit App UI
 st.title("🤖🧑🏻‍🍳 ChefBot: AI Recipe Chatbot")
 
 # Sidebar for Generation Parameters
 with st.sidebar:
     st.header("🎛️ Text Generation Params")
-    decoding_strategy = st.radio("Decoding Strategy", ["Greedy Search", "Sampling", "Beam Search"])
-
-    # Defaults
-    temperature = 1.0
-    top_k = 50
-    top_p = 0.95
-    num_beams = 1
-    do_sample = False
-
-    if decoding_strategy == "Sampling":
-        do_sample = True
-        temperature = st.select_slider("Temperature", options=[0.5, 1.0, 2.0], value=1.0, help="Higher = Creative, Lower = Focused")
-        top_k = st.select_slider("Top-K", options=[5, 50], value=50, help="Limits vocabulary to top K tokens")
-        top_p = st.select_slider("Top-P", options=[0.7, 0.95], value=0.95, help="Nucleus sampling probability")
     
-    elif decoding_strategy == "Beam Search":
-        num_beams = st.select_slider("Num Beams", options=[1, 5], value=5, help="Number of beams for search")
+    temperature = st.slider("Temperature", min_value=0.1, max_value=2.0, value=1.0, step=0.1, help="Higher = Creative, Lower = Focused")
+    top_k = st.slider("Top-K", min_value=1, max_value=100, value=50, help="Limits vocabulary to top K tokens")
+    top_p = st.slider("Top-P", min_value=0.1, max_value=1.0, value=0.95, step=0.05, help="Nucleus sampling probability")
 
     st.divider()
     st.header("🎭 System Prompt")
@@ -307,13 +290,11 @@ cuisine = st.selectbox("Select a cuisine:", ["Any", "Asian", "Indian", "Middle E
 
 if st.button("Generate Recipe", use_container_width=True) and ingredients:
     with st.spinner(f"Cooking up a recipe in {chef_persona}'s kitchen... 🍳"):
-        st.session_state["recipe"] = generate_recipe(ingredients, cuisine, temperature, top_k, top_p, num_beams, do_sample, prompt_type, serving_size, chef_persona)
+        st.session_state["recipe"] = generate_recipe(ingredients, cuisine, temperature, top_k, top_p, prompt_type, serving_size, chef_persona)
         st.session_state["gen_params"] = {
-            "Strategy": decoding_strategy,
-            "Temp": temperature if do_sample else "N/A",
-            "Top-K": top_k if do_sample else "N/A",
-            "Top-P": top_p if do_sample else "N/A",
-            "Beams": num_beams,
+            "Temp": temperature,
+            "Top-K": top_k,
+            "Top-P": top_p,
             "Prompt": prompt_type,
             "Persona": chef_persona,
             "Servings": serving_size
@@ -433,7 +414,7 @@ if "recipe" in st.session_state:
                        file_name="recipe.txt", 
                        mime="text/plain")
 
-    #  Alternative Ingredient Section
+    # Alternative Ingredient Section
     st.markdown("---")
     st.markdown("## 🔍 Find Alternative Ingredients")
 
