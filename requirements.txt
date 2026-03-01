@@ -7,8 +7,9 @@
 # For local development, create a .env file with:
 #   OPENROUTER_API_KEY=your-api-key-here
 
-# NLP (requires: python -m spacy download en_core_web_lg after installation)
+# NLP
 spacy>=3.8.0,<3.9.0
+https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
 
 # Data Processing
 numpy>=2.0.0,<3.0.0
